@@ -1,0 +1,127 @@
+import numpy as np
+import scipy.linalg
+
+def sysCall_init():
+    sim = require('sim')
+    global body_handle, right_joint_handle, left_joint_handle
+    global prismatic_joint_handle, arm_joint_handle
+    global A, B, K
+    global desired_position, desired_angle
+    global manual_velocity_bias, manual_turning_bias
+    global prismatic_joint_velocity, arm_joint_velocity
+
+    # Retrieve object handles from CoppeliaSim
+    body_handle = sim.getObject('/body')
+    right_joint_handle = sim.getObject('/right_joint')
+    left_joint_handle = sim.getObject('/left_joint')
+    prismatic_joint_handle = sim.getObject('/Prismatic_joint')
+    arm_joint_handle = sim.getObject('/arm_joint')
+    
+    # Desired position and angle for balancing
+    desired_position = -2.85
+    desired_angle = 0.0  
+
+    # Define system matrices A and B for stability
+    A = np.array([[0, 1, 0, 0],
+                  [0, 0, -9.81, 0],
+                  [0, 0, 0, 1],
+                  [0, 0, 24.52, 0]])
+                  
+    B = np.array([[0],
+                  [1],
+                  [0],
+                  [1]])
+
+    # Define weights for the LQR controller
+    Q = np.diag([20, 1, 700, 100])  # Adjust weights as needed for balancing
+    R = np.array([[0.5]])  # Control effort weight
+
+    # Compute the LQR gain matrix K
+    P = scipy.linalg.solve_continuous_are(A, B, Q, R)
+    K = np.dot(np.linalg.inv(R), np.dot(B.T, P))
+    
+
+    # Initialize manual control parameters
+    manual_velocity_bias = 0.0
+    manual_turning_bias = 0.0  
+    prismatic_joint_velocity = 0.0  
+    arm_joint_velocity = 0.0         
+
+def sysCall_actuation():
+    global A, B, K, manual_velocity_bias, manual_turning_bias
+    global desired_position, desired_angle, prismatic_joint_velocity, arm_joint_velocity
+
+    # Get the current state of the robot
+    position = sim.getObjectPosition(body_handle, -1)[1]  
+    linear_velocity, angular_velocity_vector = sim.getObjectVelocity(body_handle)
+    velocity = 10 * linear_velocity[1]  
+    angular_velocity = 10 * angular_velocity_vector[1]  
+    angle = sim.getObjectOrientation(body_handle, -1)[0]  
+    state = np.array([position, velocity, angle, angular_velocity])
+    target = np.array([desired_position, 0, desired_angle, 0])  
+    control_signal = -np.dot(K, (state - target))
+
+    # Read user inputs
+    message, data, data2 = sim.getSimulatorMessage()
+    if message == sim.message_keypress:
+        if data[0] == 2007:  # Up arrow
+            manual_velocity_bias += 0.1 
+        elif data[0] == 2008:  # Down arrow
+            manual_velocity_bias -= 0.1 
+        elif data[0] == 2009:  # Left arrow
+            manual_turning_bias += 0.2 
+        elif data[0] == 2010:  # Right arrow
+            manual_turning_bias -= 0.2 
+        elif data[0] == 32:  # Space bar
+            manual_velocity_bias = -5.5  
+            manual_turning_bias = 0 
+        else:
+            manual_velocity_bias = 0 
+            manual_turning_bias = 0  
+
+        # Update Prismatic_joint velocity based on q/e keys
+        if data[0] == 113:  # q key
+            prismatic_joint_velocity -= 0.02  
+        elif data[0] == 101:  # e key
+            prismatic_joint_velocity += 0.02  
+
+        # Update arm_joint velocity based on w/s keys
+        if data[0] == 119:  # w key
+            arm_joint_velocity += 0.2  
+        elif data[0] == 115:  # s key
+            arm_joint_velocity -= 0.2  
+
+    # Clip velocities to safe ranges
+    prismatic_joint_velocity = np.clip(prismatic_joint_velocity, -1.0, 1.0)
+    arm_joint_velocity = np.clip(arm_joint_velocity, -1.0, 1.0)
+    manual_velocity_bias = np.clip(manual_velocity_bias, -1.0, 2.0)
+    manual_turning_bias = np.clip(manual_turning_bias, -1.0, 1.0)
+
+    # Update desired position based on manual bias
+    desired_position += manual_velocity_bias * 0.012
+
+    # Apply control signal to both wheels
+    left_wheel_velocity = control_signal[0] - manual_turning_bias 
+    right_wheel_velocity = control_signal[0] + manual_turning_bias 
+
+
+    # Set the wheel velocities in the simulation
+    sim.setJointTargetVelocity(left_joint_handle, left_wheel_velocity)
+    sim.setJointTargetVelocity(right_joint_handle, right_wheel_velocity)
+
+    # Set prismatic and arm joint velocities
+    sim.setJointTargetVelocity(prismatic_joint_handle, prismatic_joint_velocity)
+    sim.setJointTargetVelocity(arm_joint_handle, arm_joint_velocity)
+    
+    print(f"State vector: {state}")
+    print(f"Control signal: {control_signal}")
+    print(f"Manual velocity bias: {manual_velocity_bias}")
+    print(f"Manual turning bias: {manual_turning_bias}")
+    print(f"Desired position: {desired_position}")
+    print(f"Desired angle: {desired_angle}")
+
+def sysCall_sensing():
+    pass
+
+def sysCall_cleanup():
+    pass
